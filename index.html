@@ -8,13 +8,29 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #000; overflow: hidden; cursor: crosshair; }
   canvas { display: block; }
+  #start {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    color: #fff;
+    font-family: sans-serif;
+    font-size: 14px;
+    letter-spacing: 0.3em;
+    cursor: pointer;
+    z-index: 10;
+  }
 </style>
 </head>
 <body>
+<div id="start">TAP TO START</div>
 <canvas id="c"></canvas>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+const startScreen = document.getElementById('start');
 
 const CELL = 8;
 let COLS, ROWS;
@@ -25,22 +41,34 @@ let waves = [];
 let audioCtx = null;
 let masterGain = null;
 let reverbNode = null;
+let audioReady = false;
 
-function initAudio() {
-  if (audioCtx) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+async function initAudio() {
+  if (audioReady) return;
+
+  const AC = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AC();
+
+  // Safari対策: resume()を明示的に呼ぶ
+  if (audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+  }
+
   masterGain = audioCtx.createGain();
   masterGain.gain.value = 0.7;
   masterGain.connect(audioCtx.destination);
-  reverbNode = createReverb(audioCtx, 6.0);
+
+  reverbNode = createReverb(6.0);
   reverbNode.connect(masterGain);
+
+  audioReady = true;
 }
 
-function createReverb(ctx, duration) {
-  const convolver = ctx.createConvolver();
-  const rate = ctx.sampleRate;
-  const length = rate * duration;
-  const impulse = ctx.createBuffer(2, length, rate);
+function createReverb(duration) {
+  const convolver = audioCtx.createConvolver();
+  const rate = audioCtx.sampleRate;
+  const length = Math.floor(rate * duration);
+  const impulse = audioCtx.createBuffer(2, length, rate);
   for (let ch = 0; ch < 2; ch++) {
     const data = impulse.getChannelData(ch);
     for (let i = 0; i < length; i++) {
@@ -52,15 +80,16 @@ function createReverb(ctx, duration) {
   return convolver;
 }
 
-// 808カウベル
 function playCowbell() {
-  if (!audioCtx) return;
+  if (!audioReady) return;
   const now = audioCtx.currentTime;
   const decayTime = 0.8 + Math.random() * 0.4;
   const freqs = [562, 845];
 
   const dryGain = audioCtx.createGain();
+  dryGain.gain.value = 0.5;
   dryGain.connect(masterGain);
+
   const wetGain = audioCtx.createGain();
   wetGain.gain.value = 0.6;
   wetGain.connect(reverbNode);
@@ -68,11 +97,11 @@ function playCowbell() {
   freqs.forEach(freq => {
     const osc = audioCtx.createOscillator();
     osc.type = 'square';
-    osc.frequency.value = freq;
+    osc.frequency.setValueAtTime(freq, now);
     osc.frequency.setTargetAtTime(freq * 0.92, now, decayTime * 0.3);
 
     const env = audioCtx.createGain();
-    env.gain.setValueAtTime(0, now);
+    env.gain.setValueAtTime(0.001, now);
     env.gain.linearRampToValueAtTime(0.3, now + 0.005);
     env.gain.exponentialRampToValueAtTime(0.001, now + decayTime);
 
@@ -90,23 +119,22 @@ function playCowbell() {
   });
 }
 
-// グリッチノイズ（テレビが潰れる音）
 function playGlitchNoise(intensity) {
-  if (!audioCtx) return;
+  if (!audioReady) return;
   const now = audioCtx.currentTime;
-  const duration = 0.04 + Math.random() * 0.08; // 短くバースト
+  const duration = 0.04 + Math.random() * 0.08;
+  const rate = audioCtx.sampleRate;
+  const bufferSize = Math.floor(rate * duration);
 
-  const bufferSize = audioCtx.sampleRate * duration;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const buffer = audioCtx.createBuffer(1, bufferSize, rate);
   const data = buffer.getChannelData(0);
   for (let i = 0; i < bufferSize; i++) {
-    data[i] = (Math.random() * 2 - 1);
+    data[i] = Math.random() * 2 - 1;
   }
 
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
 
-  // バンドパスでテレビノイズっぽく
   const bp = audioCtx.createBiquadFilter();
   bp.type = 'bandpass';
   bp.frequency.value = 2000 + Math.random() * 3000;
@@ -120,7 +148,7 @@ function playGlitchNoise(intensity) {
   bp.connect(env);
   env.connect(masterGain);
   source.start(now);
-  source.stop(now + duration + 0.01);
+  source.stop(now + duration + 0.05);
 }
 
 // --- Visual ---
@@ -130,10 +158,10 @@ function resize() {
   canvas.height = window.innerHeight;
   COLS = Math.ceil(canvas.width / CELL);
   ROWS = Math.ceil(canvas.height / CELL);
-  init();
+  initGrid();
 }
 
-function init() {
+function initGrid() {
   grid = [];
   for (let r = 0; r < ROWS; r++) {
     grid[r] = [];
@@ -147,7 +175,6 @@ function init() {
 }
 
 function ripple(ex, ey) {
-  initAudio();
   playCowbell();
   waves.push({
     cx: ex / CELL,
@@ -159,22 +186,23 @@ function ripple(ex, ey) {
   });
 }
 
-canvas.addEventListener('click', (e) => ripple(e.clientX, e.clientY));
+function handleInteraction(ex, ey) {
+  ripple(ex, ey);
+}
+
+canvas.addEventListener('click', (e) => handleInteraction(e.clientX, e.clientY));
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  Array.from(e.touches).forEach(t => ripple(t.clientX, t.clientY));
+  Array.from(e.touches).forEach(t => handleInteraction(t.clientX, t.clientY));
 }, { passive: false });
 canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
-// グリッチ（音と同期）
+// グリッチ
 let glitchLines = [];
 
 function triggerGlitch() {
-  if (!audioCtx) return; // 音が始まってから同期
   const count = 1 + Math.floor(Math.random() * 3);
   const intensity = 0.3 + Math.random() * 0.7;
-
-  // 視覚グリッチ
   for (let i = 0; i < count; i++) {
     glitchLines.push({
       row: Math.floor(Math.random() * ROWS),
@@ -183,9 +211,7 @@ function triggerGlitch() {
       ttl: 2 + Math.floor(Math.random() * 6),
     });
   }
-
-  // 音を同期
-  playGlitchNoise(intensity);
+  if (audioReady) playGlitchNoise(intensity);
 }
 
 setInterval(() => { if (Math.random() < 0.5) triggerGlitch(); }, 300);
@@ -194,7 +220,7 @@ let last = null;
 
 function draw(ts) {
   if (!last) last = ts;
-  const dt = (ts - last) / 1000;
+  const dt = Math.min((ts - last) / 1000, 0.05);
   last = ts;
 
   const maxDist = Math.sqrt(COLS * COLS + ROWS * ROWS);
@@ -222,16 +248,14 @@ function draw(ts) {
       const v = Math.sin(cell.phase + t * cell.freq * Math.PI * 2);
       let isWhite = v > 0;
 
-      let inWave = false;
       for (const w of waves) {
         const dist = Math.sqrt((c - w.cx) ** 2 + (r - w.cy) ** 2);
         if (dist <= w.radius && dist >= w.radius - w.thickness) {
-          inWave = true;
+          isWhite = !isWhite;
           break;
         }
       }
 
-      if (inWave) isWhite = !isWhite;
       if (glitchOffset !== 0 && Math.random() < 0.35) isWhite = Math.random() > 0.5;
 
       if (isWhite) {
@@ -255,6 +279,17 @@ function draw(ts) {
 
   requestAnimationFrame(draw);
 }
+
+// スタート画面：タップでオーディオ初期化
+startScreen.addEventListener('click', async () => {
+  await initAudio();
+  startScreen.style.display = 'none';
+});
+startScreen.addEventListener('touchstart', async (e) => {
+  e.preventDefault();
+  await initAudio();
+  startScreen.style.display = 'none';
+}, { passive: false });
 
 resize();
 window.addEventListener('resize', resize);
