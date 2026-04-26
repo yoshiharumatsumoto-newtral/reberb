@@ -3,96 +3,312 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Audio Test</title>
+<title>Grid Wave</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #000;
+  body { background: #000; overflow: hidden; cursor: crosshair; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; }
+  #start {
+    position: fixed;
+    inset: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 30px;
-    height: 100vh;
+    background: #000;
     color: #fff;
     font-family: sans-serif;
-  }
-  button {
-    padding: 30px 50px;
-    background: #fff;
-    color: #000;
-    border: none;
-    font-size: 14px;
-    letter-spacing: 0.2em;
+    font-size: 13px;
+    letter-spacing: 0.35em;
     cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-  }
-  #log {
-    font-size: 12px;
-    color: #888;
-    letter-spacing: 0.1em;
-    text-align: center;
-    line-height: 2;
+    z-index: 10;
+    -webkit-user-select: none;
+    user-select: none;
   }
 </style>
 </head>
 <body>
-<button id="btn">TAP TO BEEP</button>
-<div id="log">waiting...</div>
+<div id="start">TAP TO START</div>
+<canvas id="c"></canvas>
 <script>
-const btn = document.getElementById('btn');
-const log = document.getElementById('log');
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const startScreen = document.getElementById('start');
 
+const CELL = 8;
+let COLS, ROWS;
+let grid = [];
+let waves = [];
+
+// --- Audio ---
 let audioCtx = null;
+let masterGain = null;
+let reverbNode = null;
+let audioReady = false;
 
-btn.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  playBeep();
-}, { passive: false });
+function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AC();
 
-btn.addEventListener('click', () => {
-  playBeep();
-});
+  // Safariのアンロック: 無音バッファを即時再生
+  const buffer = audioCtx.createBuffer(1, 1, 22050);
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+  source.start(0);
 
-function playBeep() {
-  try {
-    if (!audioCtx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AC();
-      log.textContent = 'AudioContext: ' + audioCtx.state;
-    }
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.8;
+  masterGain.connect(audioCtx.destination);
 
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume().then(() => {
-        log.textContent += '\nresumed: ' + audioCtx.state;
-        beep();
-      });
-    } else {
-      beep();
-    }
-  } catch(e) {
-    log.textContent = 'ERROR: ' + e.message;
-  }
+  reverbNode = createReverb(6.0);
+  reverbNode.connect(masterGain);
+
+  audioReady = true;
 }
 
-function beep() {
-  try {
-    const now = audioCtx.currentTime;
+function createReverb(duration) {
+  const convolver = audioCtx.createConvolver();
+  const rate = audioCtx.sampleRate;
+  const length = Math.floor(rate * duration);
+  const impulse = audioCtx.createBuffer(2, length, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = impulse.getChannelData(ch);
+    for (let i = 0; i < length; i++) {
+      const decay = Math.pow(1 - i / length, 2.2);
+      data[i] = (Math.random() * 2 - 1) * decay;
+    }
+  }
+  convolver.buffer = impulse;
+  return convolver;
+}
+
+// ペンタトニックスケール（ピッチを2D位置でマッピング）
+const PENTATONIC = [
+  261.63, 293.66, 329.63, 392.00, 440.00, // C4 D4 E4 G4 A4
+  523.25, 587.33, 659.25, 783.99, 880.00, // C5 D5 E5 G5 A5
+  1046.50, 1174.66, 1318.51               // C6 D6 E6
+];
+
+function getFreq(x, y) {
+  const xRatio = x / canvas.width;
+  const yRatio = 1 - (y / canvas.height); // 上が高音
+  const idx = Math.floor((xRatio * 0.5 + yRatio * 0.5) * (PENTATONIC.length - 1));
+  return PENTATONIC[Math.max(0, Math.min(PENTATONIC.length - 1, idx))];
+}
+
+function playCowbell(freq) {
+  if (!audioReady) return;
+  const now = audioCtx.currentTime;
+  const decayTime = 0.8 + Math.random() * 0.4;
+
+  // 808カウベルの倍音比率を保ちつつ音階を変える
+  const ratio = freq / 562;
+  const freqs = [562 * ratio, 845 * ratio];
+
+  const dryGain = audioCtx.createGain();
+  dryGain.gain.value = 0.5;
+  dryGain.connect(masterGain);
+
+  const wetGain = audioCtx.createGain();
+  wetGain.gain.value = 0.6;
+  wetGain.connect(reverbNode);
+
+  freqs.forEach(f => {
     const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
     osc.type = 'square';
-    osc.frequency.value = 440;
-    gain.gain.setValueAtTime(0.3, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
+    osc.frequency.setValueAtTime(f, now);
+    osc.frequency.setTargetAtTime(f * 0.92, now, decayTime * 0.3);
+
+    const env = audioCtx.createGain();
+    env.gain.setValueAtTime(0.001, now);
+    env.gain.linearRampToValueAtTime(0.3, now + 0.005);
+    env.gain.exponentialRampToValueAtTime(0.001, now + decayTime);
+
+    const hp = audioCtx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 600;
+    hp.Q.value = 2;
+
+    osc.connect(hp);
+    hp.connect(env);
+    env.connect(dryGain);
+    env.connect(wetGain);
     osc.start(now);
-    osc.stop(now + 0.5);
-    log.textContent = 'played! state: ' + audioCtx.state + '\ntime: ' + now.toFixed(3);
-  } catch(e) {
-    log.textContent = 'BEEP ERROR: ' + e.message;
+    osc.stop(now + decayTime + 0.1);
+  });
+}
+
+function playGlitchNoise(intensity) {
+  if (!audioReady) return;
+  const now = audioCtx.currentTime;
+  const duration = 0.04 + Math.random() * 0.08;
+  const rate = audioCtx.sampleRate;
+  const bufferSize = Math.floor(rate * duration);
+
+  const buffer = audioCtx.createBuffer(1, bufferSize, rate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 2000 + Math.random() * 3000;
+  bp.Q.value = 0.5;
+
+  const env = audioCtx.createGain();
+  env.gain.setValueAtTime(intensity * 0.4, now);
+  env.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+  source.connect(bp);
+  bp.connect(env);
+  env.connect(masterGain);
+  source.start(now);
+  source.stop(now + duration + 0.05);
+}
+
+// --- Visual ---
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  COLS = Math.ceil(canvas.width / CELL);
+  ROWS = Math.ceil(canvas.height / CELL);
+  initGrid();
+}
+
+function initGrid() {
+  grid = [];
+  for (let r = 0; r < ROWS; r++) {
+    grid[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      grid[r][c] = {
+        phase: Math.random() * Math.PI * 2,
+        freq: 0.3 + Math.random() * 0.4,
+      };
+    }
   }
 }
+
+function ripple(ex, ey) {
+  const freq = getFreq(ex, ey);
+  playCowbell(freq);
+  waves.push({
+    cx: ex / CELL,
+    cy: ey / CELL,
+    radius: 0,
+    speed: 18 + Math.random() * 6,
+    thickness: 10,
+    alive: true,
+  });
+}
+
+canvas.addEventListener('click', (e) => ripple(e.clientX, e.clientY));
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  Array.from(e.touches).forEach(t => ripple(t.clientX, t.clientY));
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+// グリッチ
+let glitchLines = [];
+
+function triggerGlitch() {
+  const count = 1 + Math.floor(Math.random() * 3);
+  const intensity = 0.3 + Math.random() * 0.7;
+  for (let i = 0; i < count; i++) {
+    glitchLines.push({
+      row: Math.floor(Math.random() * ROWS),
+      width: 2 + Math.floor(Math.random() * 8),
+      offset: Math.floor(Math.random() * 16) - 8,
+      ttl: 2 + Math.floor(Math.random() * 6),
+    });
+  }
+  playGlitchNoise(intensity);
+}
+
+setInterval(() => { if (audioReady && Math.random() < 0.5) triggerGlitch(); }, 300);
+
+let last = null;
+
+function draw(ts) {
+  if (!last) last = ts;
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+
+  const maxDist = Math.sqrt(COLS * COLS + ROWS * ROWS);
+  waves.forEach(w => {
+    w.radius += w.speed * dt;
+    if (w.radius - w.thickness > maxDist) w.alive = false;
+  });
+  waves = waves.filter(w => w.alive);
+
+  glitchLines = glitchLines.filter(g => { g.ttl--; return g.ttl > 0; });
+  const glitchRowMap = {};
+  glitchLines.forEach(g => {
+    for (let dr = 0; dr < g.width; dr++) glitchRowMap[g.row + dr] = g.offset;
+  });
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const t = ts / 1000;
+
+  for (let r = 0; r < ROWS; r++) {
+    const glitchOffset = glitchRowMap[r] ?? 0;
+    for (let c = 0; c < COLS; c++) {
+      const cell = grid[r][c];
+      const v = Math.sin(cell.phase + t * cell.freq * Math.PI * 2);
+      let isWhite = v > 0;
+
+      for (const w of waves) {
+        const dist = Math.sqrt((c - w.cx) ** 2 + (r - w.cy) ** 2);
+        if (dist <= w.radius && dist >= w.radius - w.thickness) {
+          isWhite = !isWhite;
+          break;
+        }
+      }
+
+      if (glitchOffset !== 0 && Math.random() < 0.35) isWhite = Math.random() > 0.5;
+
+      if (isWhite) {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect((c + glitchOffset) * CELL, r * CELL, CELL - 1, CELL - 1);
+      }
+    }
+  }
+
+  if (Math.random() < 0.12) {
+    const n = Math.floor(Math.random() * 30);
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = Math.random() > 0.5 ? '#fff' : '#000';
+      ctx.fillRect(
+        Math.floor(Math.random() * COLS) * CELL,
+        Math.floor(Math.random() * ROWS) * CELL,
+        CELL - 1, CELL - 1
+      );
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// TAP TO STARTで即オーディオ解放
+function handleStart(e) {
+  e.preventDefault();
+  unlockAudio();
+  // スタート直後にカウベルを鳴らしてSafariを確実にアンロック
+  setTimeout(() => playCowbell(440), 50);
+  startScreen.style.display = 'none';
+}
+
+startScreen.addEventListener('touchstart', handleStart, { passive: false });
+startScreen.addEventListener('click', handleStart);
+
+resize();
+window.addEventListener('resize', resize);
+requestAnimationFrame(draw);
 </script>
 </body>
 </html>
