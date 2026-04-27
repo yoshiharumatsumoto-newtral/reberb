@@ -45,20 +45,42 @@ let masterGain = null;
 let reverbNode = null;
 let audioReady = false;
 
-// ポリリズム設定 130BPM
 const BPM = 130;
-const beat = 60 / BPM; // 1拍の秒数
+const beat = 60 / BPM;
+const sixteenth = beat / 4; // 16分音符
 
-// ポリリズムパターン（3拍子 vs 4拍子 vs 5拍子）
-// 1=鳴る 0=鳴らない
-const patterns = [
-  { steps: [1,0,0, 1,0,0, 1,0,0, 1,0,0], len: 12, interval: beat / 3 }, // 4拍を3分割
-  { steps: [1,0,0,0, 1,0,0,0, 1,0,0,0], len: 12, interval: beat / 4 }, // 3拍を4分割
-  { steps: [1,0,0,0,0, 1,0,0,0,0],       len: 10, interval: beat / 5 }, // 2拍を5分割
+// ユークリッドリズム生成
+// k個のパルスをn個のステップに均等分配
+function euclidean(k, n, offset = 0) {
+  const pattern = new Array(n).fill(0);
+  let bucket = 0;
+  for (let i = 0; i < n; i++) {
+    bucket += k;
+    if (bucket >= n) {
+      bucket -= n;
+      pattern[(i + offset) % n] = 1;
+    }
+  }
+  return pattern;
+}
+
+// リズムレイヤー定義
+// 強いアクセント: ユークリッドで不規則に
+// 弱い裏拍: 固定パターンで8分の裏に薄く
+const layers = [
+  // 強レイヤー1: 16ステップ中5発 ユークリッド (E(5,16))
+  { pattern: euclidean(5, 16, 0), stepDur: sixteenth, intensity: 0.8, counter: 0 },
+  // 強レイヤー2: 12ステップ中7発 ユークリッド (E(7,12)) - アフリカ的
+  { pattern: euclidean(7, 12, 2), stepDur: sixteenth * (4/3), intensity: 0.6, counter: 0 },
+  // 強レイヤー3: 10ステップ中3発 ユークリッド (E(3,10))
+  { pattern: euclidean(3, 10, 1), stepDur: sixteenth * 1.25, intensity: 0.7, counter: 0 },
+  // 弱い裏拍: 8分音符の裏 (0,1,0,1...) 薄く
+  { pattern: [0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1], stepDur: sixteenth, intensity: 0.15, counter: 0 },
+  // 弱い裏拍2: 少しズレた16分の裏 薄く
+  { pattern: [0,0,1,0, 0,0,1,0, 0,0,0,1, 0,0,1,0], stepDur: sixteenth, intensity: 0.12, counter: 0 },
 ];
 
-let patternCounters = patterns.map(() => 0);
-let nextTimes = null; // 各パターンの次の発火時刻
+let nextTimes = null;
 
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -77,9 +99,8 @@ function unlockAudio() {
   reverbNode = createReverb(6.0);
   reverbNode.connect(masterGain);
 
-  // ポリリズム開始タイミングを初期化
   const now = audioCtx.currentTime + 0.1;
-  nextTimes = patterns.map(() => now);
+  nextTimes = layers.map(() => now);
 
   audioReady = true;
 }
@@ -100,49 +121,51 @@ function createReverb(duration) {
   return convolver;
 }
 
-// ポリリズムスケジューラー（Web Audio Clock使用）
+// スケジューラー
 function schedulePolyrhythm() {
   if (!audioReady) return;
   const now = audioCtx.currentTime;
-  const lookahead = 0.1; // 100ms先読み
+  const lookahead = 0.1;
 
-  patterns.forEach((pat, pi) => {
-    while (nextTimes[pi] < now + lookahead) {
-      const t = nextTimes[pi];
-      const step = patternCounters[pi] % pat.len;
+  layers.forEach((layer, li) => {
+    while (nextTimes[li] < now + lookahead) {
+      const t = nextTimes[li];
+      const step = layer.counter % layer.pattern.length;
 
-      if (pat.steps[step] === 1) {
-        // 視覚グリッチをスケジュール
+      if (layer.pattern[step] === 1) {
         const delay = Math.max(0, (t - now) * 1000);
-        setTimeout(() => triggerGlitchVisual(), delay);
-        // 音をスケジュール
-        playGlitchNoise(0.3 + Math.random() * 0.5, t);
+        // 強いレイヤーのみ視覚グリッチを発火
+        if (layer.intensity > 0.3) {
+          setTimeout(() => triggerGlitchVisual(layer.intensity), delay);
+        }
+        playGlitchNoise(layer.intensity, t);
       }
 
-      patternCounters[pi]++;
-      nextTimes[pi] += pat.interval;
+      layer.counter++;
+      nextTimes[li] += layer.stepDur;
     }
   });
 }
 
-// 視覚グリッチ
+// 視覚グリッチ（強度によって規模が変わる）
 let glitchLines = [];
-function triggerGlitchVisual() {
-  const count = 1 + Math.floor(Math.random() * 3);
+function triggerGlitchVisual(intensity) {
+  const count = intensity > 0.5
+    ? 2 + Math.floor(Math.random() * 4)
+    : 1 + Math.floor(Math.random() * 2);
   for (let i = 0; i < count; i++) {
     glitchLines.push({
       row: Math.floor(Math.random() * ROWS),
-      width: 2 + Math.floor(Math.random() * 8),
-      offset: Math.floor(Math.random() * 16) - 8,
-      ttl: 2 + Math.floor(Math.random() * 6),
+      width: Math.floor(2 + intensity * 8 * Math.random()),
+      offset: Math.floor((Math.random() * 20 - 10) * intensity),
+      ttl: 2 + Math.floor(Math.random() * 5),
     });
   }
 }
 
-// グリッチノイズ（スケジュール時刻指定）
 function playGlitchNoise(intensity, when) {
   if (!audioReady) return;
-  const duration = 0.03 + Math.random() * 0.06;
+  const duration = 0.02 + Math.random() * 0.06;
   const rate = audioCtx.sampleRate;
   const bufferSize = Math.floor(rate * duration);
 
@@ -155,7 +178,10 @@ function playGlitchNoise(intensity, when) {
 
   const bp = audioCtx.createBiquadFilter();
   bp.type = 'bandpass';
-  bp.frequency.value = 1500 + Math.random() * 4000;
+  // 弱い裏拍は高め、強いアクセントは中域
+  bp.frequency.value = intensity > 0.3
+    ? 1500 + Math.random() * 3000
+    : 3000 + Math.random() * 5000;
   bp.Q.value = 0.8;
 
   const env = audioCtx.createGain();
@@ -266,7 +292,6 @@ canvas.addEventListener('touchstart', (e) => {
 }, { passive: false });
 canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
-// スケジューラーを定期実行
 setInterval(() => { if (audioReady) schedulePolyrhythm(); }, 25);
 
 let last = null;
