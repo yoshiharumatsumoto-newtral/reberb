@@ -24,10 +24,23 @@
     -webkit-user-select: none;
     user-select: none;
   }
+  #back {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 9999;
+    color: rgba(255,255,255,0.30);
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    font-family: Georgia, serif;
+    text-decoration: none;
+    transition: color 0.3s;
+  }
 </style>
 </head>
 <body>
 <div id="start">TAP TO START</div>
+<a id="back" href="https://yoshiharumatsumoto-newtral.github.io/">← back</a>
 <canvas id="c"></canvas>
 <script>
 const canvas = document.getElementById('c');
@@ -47,10 +60,8 @@ let audioReady = false;
 
 const BPM = 132;
 const beat = 60 / BPM;
-const sixteenth = beat / 4; // 16分音符
+const sixteenth = beat / 4;
 
-// ユークリッドリズム生成
-// k個のパルスをn個のステップに均等分配
 function euclidean(k, n, offset = 0) {
   const pattern = new Array(n).fill(0);
   let bucket = 0;
@@ -64,19 +75,11 @@ function euclidean(k, n, offset = 0) {
   return pattern;
 }
 
-// リズムレイヤー定義
-// 強いアクセント: ユークリッドで不規則に
-// 弱い裏拍: 固定パターンで8分の裏に薄く
 const layers = [
-  // 強レイヤー1: 16ステップ中5発 ユークリッド (E(5,16))
   { pattern: euclidean(5, 16, 0), stepDur: sixteenth, intensity: 0.8, counter: 0 },
-  // 強レイヤー2: 12ステップ中7発 ユークリッド (E(7,12)) - アフリカ的
   { pattern: euclidean(7, 12, 2), stepDur: sixteenth * (4/3), intensity: 0.6, counter: 0 },
-  // 強レイヤー3: 10ステップ中3発 ユークリッド (E(3,10))
   { pattern: euclidean(3, 10, 1), stepDur: sixteenth * 1.25, intensity: 0.7, counter: 0 },
-  // 弱い裏拍: 8分音符の裏 (0,1,0,1...) 薄く
   { pattern: [0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1], stepDur: sixteenth, intensity: 0.15, counter: 0 },
-  // 弱い裏拍2: 少しズレた16分の裏 薄く
   { pattern: [0,0,1,0, 0,0,1,0, 0,0,0,1, 0,0,1,0], stepDur: sixteenth, intensity: 0.12, counter: 0 },
 ];
 
@@ -121,7 +124,6 @@ function createReverb(duration) {
   return convolver;
 }
 
-// スケジューラー
 function schedulePolyrhythm() {
   if (!audioReady) return;
   const now = audioCtx.currentTime;
@@ -134,7 +136,6 @@ function schedulePolyrhythm() {
 
       if (layer.pattern[step] === 1) {
         const delay = Math.max(0, (t - now) * 1000);
-        // 強いレイヤーのみ視覚グリッチを発火
         if (layer.intensity > 0.3) {
           setTimeout(() => triggerGlitchVisual(layer.intensity), delay);
         }
@@ -147,7 +148,6 @@ function schedulePolyrhythm() {
   });
 }
 
-// 視覚グリッチ（強度によって規模が変わる）
 let glitchLines = [];
 function triggerGlitchVisual(intensity) {
   const count = intensity > 0.5
@@ -178,7 +178,6 @@ function playGlitchNoise(intensity, when) {
 
   const bp = audioCtx.createBiquadFilter();
   bp.type = 'bandpass';
-  // 弱い裏拍は高め、強いアクセントは中域
   bp.frequency.value = intensity > 0.3
     ? 1500 + Math.random() * 3000
     : 3000 + Math.random() * 5000;
@@ -195,13 +194,12 @@ function playGlitchNoise(intensity, when) {
   source.stop(when + duration + 0.05);
 }
 
-// ペンタトニック 2Dマッピング
 const PENTATONIC = [
-  261.63, 293.66, 329.63, 392.00, 440.00,  // C4 D4 E4 G4 A4
-  523.25, 587.33, 659.25, 783.99, 880.00,  // C5 D5 E5 G5 A5
-  1046.50, 1174.66, 1318.51, 1567.98, 1760.00  // C6 D6 E6 G6 A6
+  261.63, 293.66, 329.63, 392.00, 440.00,
+  523.25, 587.33, 659.25, 783.99, 880.00,
+  1046.50, 1174.66, 1318.51, 1567.98, 1760.00
 ];
- 
+
 function getFreq(x, y) {
   const xRatio = x / canvas.width;
   const yRatio = 1 - (y / canvas.height);
@@ -249,8 +247,6 @@ function playCowbell(freq) {
   });
 }
 
-// --- Visual ---
-
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -285,8 +281,12 @@ function ripple(ex, ey) {
   });
 }
 
-canvas.addEventListener('click', (e) => ripple(e.clientX, e.clientY));
+canvas.addEventListener('click', (e) => {
+  if (e.target.id === 'back') return;
+  ripple(e.clientX, e.clientY);
+});
 canvas.addEventListener('touchstart', (e) => {
+  if (e.target.id === 'back') return;
   e.preventDefault();
   Array.from(e.touches).forEach(t => ripple(t.clientX, t.clientY));
 }, { passive: false });
