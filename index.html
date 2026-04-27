@@ -45,11 +45,25 @@ let masterGain = null;
 let reverbNode = null;
 let audioReady = false;
 
+// ポリリズム設定 130BPM
+const BPM = 130;
+const beat = 60 / BPM; // 1拍の秒数
+
+// ポリリズムパターン（3拍子 vs 4拍子 vs 5拍子）
+// 1=鳴る 0=鳴らない
+const patterns = [
+  { steps: [1,0,0, 1,0,0, 1,0,0, 1,0,0], len: 12, interval: beat / 3 }, // 4拍を3分割
+  { steps: [1,0,0,0, 1,0,0,0, 1,0,0,0], len: 12, interval: beat / 4 }, // 3拍を4分割
+  { steps: [1,0,0,0,0, 1,0,0,0,0],       len: 10, interval: beat / 5 }, // 2拍を5分割
+];
+
+let patternCounters = patterns.map(() => 0);
+let nextTimes = null; // 各パターンの次の発火時刻
+
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   audioCtx = new AC();
 
-  // Safariのアンロック: 無音バッファを即時再生
   const buffer = audioCtx.createBuffer(1, 1, 22050);
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
@@ -62,6 +76,10 @@ function unlockAudio() {
 
   reverbNode = createReverb(6.0);
   reverbNode.connect(masterGain);
+
+  // ポリリズム開始タイミングを初期化
+  const now = audioCtx.currentTime + 0.1;
+  nextTimes = patterns.map(() => now);
 
   audioReady = true;
 }
@@ -82,16 +100,85 @@ function createReverb(duration) {
   return convolver;
 }
 
-// ペンタトニックスケール（ピッチを2D位置でマッピング）
+// ポリリズムスケジューラー（Web Audio Clock使用）
+function schedulePolyrhythm() {
+  if (!audioReady) return;
+  const now = audioCtx.currentTime;
+  const lookahead = 0.1; // 100ms先読み
+
+  patterns.forEach((pat, pi) => {
+    while (nextTimes[pi] < now + lookahead) {
+      const t = nextTimes[pi];
+      const step = patternCounters[pi] % pat.len;
+
+      if (pat.steps[step] === 1) {
+        // 視覚グリッチをスケジュール
+        const delay = Math.max(0, (t - now) * 1000);
+        setTimeout(() => triggerGlitchVisual(), delay);
+        // 音をスケジュール
+        playGlitchNoise(0.3 + Math.random() * 0.5, t);
+      }
+
+      patternCounters[pi]++;
+      nextTimes[pi] += pat.interval;
+    }
+  });
+}
+
+// 視覚グリッチ
+let glitchLines = [];
+function triggerGlitchVisual() {
+  const count = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i++) {
+    glitchLines.push({
+      row: Math.floor(Math.random() * ROWS),
+      width: 2 + Math.floor(Math.random() * 8),
+      offset: Math.floor(Math.random() * 16) - 8,
+      ttl: 2 + Math.floor(Math.random() * 6),
+    });
+  }
+}
+
+// グリッチノイズ（スケジュール時刻指定）
+function playGlitchNoise(intensity, when) {
+  if (!audioReady) return;
+  const duration = 0.03 + Math.random() * 0.06;
+  const rate = audioCtx.sampleRate;
+  const bufferSize = Math.floor(rate * duration);
+
+  const buffer = audioCtx.createBuffer(1, bufferSize, rate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 1500 + Math.random() * 4000;
+  bp.Q.value = 0.8;
+
+  const env = audioCtx.createGain();
+  env.gain.setValueAtTime(intensity * 0.5, when);
+  env.gain.exponentialRampToValueAtTime(0.001, when + duration);
+
+  source.connect(bp);
+  bp.connect(env);
+  env.connect(masterGain);
+  source.start(when);
+  source.stop(when + duration + 0.05);
+}
+
+// ペンタトニック 2Dマッピング
 const PENTATONIC = [
-  261.63, 293.66, 329.63, 392.00, 440.00, // C4 D4 E4 G4 A4
-  523.25, 587.33, 659.25, 783.99, 880.00, // C5 D5 E5 G5 A5
-  1046.50, 1174.66, 1318.51               // C6 D6 E6
+  261.63, 293.66, 329.63, 392.00, 440.00,
+  523.25, 587.33, 659.25, 783.99, 880.00,
+  1046.50, 1174.66, 1318.51
 ];
 
 function getFreq(x, y) {
   const xRatio = x / canvas.width;
-  const yRatio = 1 - (y / canvas.height); // 上が高音
+  const yRatio = 1 - (y / canvas.height);
   const idx = Math.floor((xRatio * 0.5 + yRatio * 0.5) * (PENTATONIC.length - 1));
   return PENTATONIC[Math.max(0, Math.min(PENTATONIC.length - 1, idx))];
 }
@@ -100,8 +187,6 @@ function playCowbell(freq) {
   if (!audioReady) return;
   const now = audioCtx.currentTime;
   const decayTime = 0.8 + Math.random() * 0.4;
-
-  // 808カウベルの倍音比率を保ちつつ音階を変える
   const ratio = freq / 562;
   const freqs = [562 * ratio, 845 * ratio];
 
@@ -136,36 +221,6 @@ function playCowbell(freq) {
     osc.start(now);
     osc.stop(now + decayTime + 0.1);
   });
-}
-
-function playGlitchNoise(intensity) {
-  if (!audioReady) return;
-  const now = audioCtx.currentTime;
-  const duration = 0.04 + Math.random() * 0.08;
-  const rate = audioCtx.sampleRate;
-  const bufferSize = Math.floor(rate * duration);
-
-  const buffer = audioCtx.createBuffer(1, bufferSize, rate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-
-  const bp = audioCtx.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.value = 2000 + Math.random() * 3000;
-  bp.Q.value = 0.5;
-
-  const env = audioCtx.createGain();
-  env.gain.setValueAtTime(intensity * 0.4, now);
-  env.gain.exponentialRampToValueAtTime(0.001, now + duration);
-
-  source.connect(bp);
-  bp.connect(env);
-  env.connect(masterGain);
-  source.start(now);
-  source.stop(now + duration + 0.05);
 }
 
 // --- Visual ---
@@ -211,24 +266,8 @@ canvas.addEventListener('touchstart', (e) => {
 }, { passive: false });
 canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
-// グリッチ
-let glitchLines = [];
-
-function triggerGlitch() {
-  const count = 1 + Math.floor(Math.random() * 3);
-  const intensity = 0.3 + Math.random() * 0.7;
-  for (let i = 0; i < count; i++) {
-    glitchLines.push({
-      row: Math.floor(Math.random() * ROWS),
-      width: 2 + Math.floor(Math.random() * 8),
-      offset: Math.floor(Math.random() * 16) - 8,
-      ttl: 2 + Math.floor(Math.random() * 6),
-    });
-  }
-  playGlitchNoise(intensity);
-}
-
-setInterval(() => { if (audioReady && Math.random() < 0.5) triggerGlitch(); }, 300);
+// スケジューラーを定期実行
+setInterval(() => { if (audioReady) schedulePolyrhythm(); }, 25);
 
 let last = null;
 
@@ -294,11 +333,9 @@ function draw(ts) {
   requestAnimationFrame(draw);
 }
 
-// TAP TO STARTで即オーディオ解放
 function handleStart(e) {
   e.preventDefault();
   unlockAudio();
-  // スタート直後にカウベルを鳴らしてSafariを確実にアンロック
   setTimeout(() => playCowbell(440), 50);
   startScreen.style.display = 'none';
 }
